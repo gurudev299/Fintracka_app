@@ -277,9 +277,7 @@ with tab_add:
 
         # Goal linked progress option
         conn = get_db()
-        user_goals = pd.read_sql_query("SELECT id, title FROM goals WHERE user_id = ? AND status='active'", conn, params=(current_uid,))
-        conn.close()
-
+        user_goals = pd.read_sql_query("SELECT id, title FROM goals WHERE status='active'", conn)
         link_goal = False
         selected_goal_id = None
         if t_type == "Income" and not user_goals.empty:
