@@ -185,8 +185,8 @@ with tab_goals:
 
     # Display only this user's active goals
     conn = get_db()
-    goals_df = pd.read_sql_query("SELECT * FROM goals WHERE user_id = ? AND status='active'", conn, params=(current_uid,))
-    conn.close()
+    # Updated Line:
+    goals_df = pd.read_sql_query("SELECT * FROM goals WHERE status='active'", conn)
 
     if goals_df.empty:
         st.info("Abhi aapka koi active goal nahi hai. Upar se add karein!")
