@@ -2,301 +2,387 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import date, datetime
+import hashlib
 
 # ----------------- PAGE CONFIG -----------------
 st.set_page_config(
-    page_title="FinTrack & Goal Engine",
+    page_title="FinTrack - Multi-User & Goal Engine",
     page_icon="💰",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# Responsive & Clean CSS
+# Responsive styling
 st.markdown("""
-<style>
-    .metric-card {
-        background: linear-gradient(135deg, #1e293b, #0f172a);
-        color: #ffffff;
-        padding: 18px;
-        border-radius: 12px;
-        border-left: 6px solid #3b82f6;
-        margin-bottom: 12px;
+    <style>
+    .metric-box {
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 10px;
     }
-    .metric-title {
-        font-size: 0.9rem;
-        color: #94a3b8;
-        text-transform: uppercase;
-        font-weight: 600;
-        letter-spacing: 0.5px;
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
     }
-    .metric-val {
-        font-size: 1.7rem;
-        font-weight: 700;
-        margin-top: 4px;
-        color: #f8fafc;
-    }
-    div[data-testid="stMetricValue"] {
-        font-size: 1.4rem;
-    }
-</style>
+    </style>
 """, unsafe_allow_html=True)
 
 # ----------------- DATABASE HELPERS -----------------
-DB_FILE = "fintrack.db"
-
 def get_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect("fintrack.db", check_same_thread=False)
     return conn
+
+def hash_pass(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
     conn = get_db()
     c = conn.cursor()
-    # Transactions Table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            type TEXT NOT NULL,
-            category TEXT NOT NULL,
-            amount REAL NOT NULL,
-            note TEXT
-        )
-    ''')
-    # Goals Table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS goals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            target_amount REAL NOT NULL,
-            current_amount REAL DEFAULT 0.0,
-            start_date TEXT NOT NULL,
-            target_date TEXT NOT NULL,
-            status TEXT DEFAULT 'active'
-        )
-    ''')
+    # Users table
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE,
+                    password TEXT
+                )''')
+    # Transactions table with user_id
+    c.execute('''CREATE TABLE IF NOT EXISTS transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    date TEXT,
+                    type TEXT,
+                    category TEXT,
+                    amount REAL,
+                    note TEXT,
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                )''')
+    # Goals table with user_id
+    c.execute('''CREATE TABLE IF NOT EXISTS goals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    title TEXT,
+                    target_amount REAL,
+                    current_amount REAL,
+                    start_date TEXT,
+                    target_date TEXT,
+                    status TEXT,
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                )''')
     conn.commit()
     conn.close()
 
 init_db()
 
-# ----------------- UI TABS -----------------
-st.title("💰 FinTrack & Dream Engine")
+# ----------------- AUTHENTICATION SYSTEM -----------------
+if "user_id" not in st.session_state:
+    st.session_state["user_id"] = None
+if "username" not in st.session_state:
+    st.session_state["username"] = None
+
+def login_user(username, password):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id FROM users WHERE username = ? AND password = ?", (username, hash_pass(password)))
+    user = c.fetchone()
+    conn.close()
+    return user
+
+def register_user(username, password):
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hash_pass(password)))
+        conn.commit()
+        success = True
+    except sqlite3.IntegrityError:
+        success = False
+    conn.close()
+    return success
+
+# Screen for Login / Signup if not logged in
+if st.session_state["user_id"] is None:
+    st.title("🔐 FinTrack Login / Sign Up")
+    st.info("Har user ka data alag aur secure rahega. Apna user select karein ya naya banayein.")
+
+    auth_choice = st.radio("Choose Option", ["Login", "Sign Up (Naya User)"], horizontal=True)
+
+    with st.form("auth_form"):
+        u_name = st.text_input("Username", placeholder="e.g. rahul, aman")
+        u_pass = st.text_input("Password / 4-Digit PIN", type="password")
+        submit_btn = st.form_submit_button("Submit")
+
+        if submit_btn:
+            if not u_name or not u_pass:
+                st.warning("Kripya username aur password dono daalein.")
+            elif auth_choice == "Login":
+                user = login_user(u_name.strip().lower(), u_pass)
+                if user:
+                    st.session_state["user_id"] = user[0]
+                    st.session_state["username"] = u_name.strip().lower()
+                    st.success("Login safal raha!")
+                    st.rerun()
+                else:
+                    st.error("Galat username ya password! Kripya dobara try karein.")
+            else:
+                ok = register_user(u_name.strip().lower(), u_pass)
+                if ok:
+                    st.success("Account ban gaya! Ab upar 'Login' chun kar login karein.")
+                else:
+                    st.error("Yeh username pehle se exist karta hai. Dusra naam chunein.")
+    st.stop()
+
+# ----------------- MAIN APP (LOGGED IN USER) -----------------
+current_uid = st.session_state["user_id"]
+current_uname = st.session_state["username"]
+
+# Top Bar with Logout
+top_c1, top_c2 = st.columns([4, 1])
+with top_c1:
+    st.title(f"💰 FinTrack ({current_uname.title()})")
+with top_c2:
+    if st.button("🚪 Logout"):
+        st.session_state["user_id"] = None
+        st.session_state["username"] = None
+        st.rerun()
 
 tab_goals, tab_add, tab_analytics, tab_history = st.tabs([
-    "🎯 Goals & Run-Rate",
+    "🎯 Goals & Targets",
     "➕ Add Entry",
-    "📊 Analytics",
-    "📜 History"
+    "📊 Monthly/Yearly Analytics",
+    "📜 History & Delete/Reset"
 ])
 
-# ================= TAB 1: DREAMS & GOAL TRACKER =================
+# ----------------- TAB 1: GOALS & TARGETS -----------------
 with tab_goals:
-    st.subheader("🎯 Dream / Goal Run-Rate Calculator")
-    st.caption("Aapka daily required earning target calculate karta hai taaki deadline miss na ho.")
+    st.subheader("🎯 Dream & Target Tracker")
 
+    with st.expander("➕ Create New Goal / Target", expanded=False):
+        with st.form("new_goal_form", clear_on_submit=True):
+            g_title = st.text_input("Goal Name", placeholder="e.g. 26 Days me 30k")
+            g_target = st.number_input("Target Amount (₹)", min_value=1.0, value=30000.0, step=500.0)
+            g_current = st.number_input("Starting Saved Amount (₹)", min_value=0.0, value=0.0, step=100.0)
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                g_start = st.date_input("Start Date", value=date.today())
+            with col_d2:
+                g_end = st.date_input("Target Date", value=date.today() + pd.Timedelta(days=26))
+
+            submit_goal = st.form_submit_button("Save Goal")
+            if submit_goal:
+                if g_end <= g_start:
+                    st.error("Target date start date ke baad honi chahiye!")
+                else:
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute('''INSERT INTO goals (user_id, title, target_amount, current_amount, start_date, target_date, status)
+                                 VALUES (?, ?, ?, ?, ?, ?, 'active')''',
+                              (current_uid, g_title, g_target, g_current, str(g_start), str(g_end)))
+                    conn.commit()
+                    conn.close()
+                    st.success("Goal successfully save ho gaya!")
+                    st.rerun()
+
+    # Display only this user's active goals
     conn = get_db()
-    goals = conn.execute("SELECT * FROM goals WHERE status='active' ORDER BY id DESC").fetchall()
+    goals_df = pd.read_sql_query("SELECT * FROM goals WHERE user_id = ? AND status='active'", conn, params=(current_uid,))
     conn.close()
 
-    if not goals:
-        st.info("💡 Koi active goal nahi mila! Niche diye gaye form se pehla goal banayein (Jaise: 26 din me ₹30,000).")
+    if goals_df.empty:
+        st.info("Abhi aapka koi active goal nahi hai. Upar se add karein!")
     else:
-        for g in goals:
-            t_date = datetime.strptime(g['target_date'], '%Y-%m-%d').date()
+        for _, row in goals_df.iterrows():
             today = date.today()
-            days_left = (t_date - today).days
-            
-            remaining_amount = max(0.0, g['target_amount'] - g['current_amount'])
-            progress = min(1.0, g['current_amount'] / g['target_amount']) if g['target_amount'] > 0 else 0.0
+            target_date = datetime.strptime(row['target_date'], '%Y-%m-%d').date()
+            days_left = max((target_date - today).days, 0)
 
-            # Dynamic daily calculation
-            if days_left > 0 and remaining_amount > 0:
-                per_day_needed = remaining_amount / days_left
-            elif remaining_amount == 0:
-                per_day_needed = 0.0
-            else:
-                per_day_needed = remaining_amount  # Deadline over
+            remaining_amount = max(row['target_amount'] - row['current_amount'], 0.0)
+            progress = min(row['current_amount'] / row['target_amount'], 1.0) if row['target_amount'] > 0 else 0
 
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-title">{g['title']} (Deadline: {t_date.strftime('%d %b %Y')})</div>
-                <div class="metric-val">₹{g['current_amount']:,.0f} / ₹{g['target_amount']:,.0f}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Daily Run-rate formula
+            daily_run_rate = (remaining_amount / days_left) if days_left > 0 else remaining_amount
 
+            st.markdown(f"### 📌 {row['title']}")
             st.progress(progress)
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("Progress", f"{progress * 100:.1f}%")
-            c2.metric("Bache Din", f"{days_left} din" if days_left >= 0 else "Expired")
-            c3.metric("Required / Day", f"₹{per_day_needed:,.2f}" if days_left > 0 else "Goal Done" if remaining_amount == 0 else "Overdue")
+            c1.metric("Target Amount", f"₹{row['target_amount']:,.2f}")
+            c2.metric("Achieved", f"₹{row['current_amount']:,.2f}", f"{progress*100:.1f}%")
+            c3.metric("Remaining Amount", f"₹{remaining_amount:,.2f}")
 
-            # Quick update goal progress
-            with st.expander(f"Update Progress: {g['title']}"):
-                with st.form(f"update_g_{g['id']}"):
-                    add_val = st.number_input("Aur kitna add kiya/kamaya? (₹)", min_value=1.0, step=100.0, format="%.2f")
-                    if st.form_submit_button("Update Karein"):
-                        c = get_db()
-                        c.execute("UPDATE goals SET current_amount = current_amount + ? WHERE id = ?", (add_val, g['id']))
-                        c.commit()
-                        c.close()
-                        st.success("Goal progress update ho gaya!")
+            c4, c5 = st.columns(2)
+            c4.metric("Days Remaining", f"{days_left} Days")
+            c5.metric("Required Per Day Earning", f"₹{daily_run_rate:,.2f} / day")
+
+            # Quick update or delete/reset goal
+            with st.expander(f"⚙️ Manage '{row['title']}' (Progress ya Reset/Delete)"):
+                col_u1, col_u2 = st.columns(2)
+                with col_u1:
+                    with st.form(f"quick_add_{row['id']}"):
+                        add_amt = st.number_input("Add Progress Amount (₹)", min_value=1.0, step=100.0)
+                        if st.form_submit_button("Add Progress"):
+                            conn = get_db()
+                            c = conn.cursor()
+                            c.execute("UPDATE goals SET current_amount = current_amount + ? WHERE id = ? AND user_id = ?",
+                                      (add_amt, row['id'], current_uid))
+                            conn.commit()
+                            conn.close()
+                            st.success("Progress update ho gayi!")
+                            st.rerun()
+
+                with col_u2:
+                    st.write("Galat goal ban gaya? Reset/Delete karein:")
+                    if st.button(f"🗑️ Delete This Goal", key=f"del_goal_{row['id']}"):
+                        conn = get_db()
+                        c = conn.cursor()
+                        c.execute("DELETE FROM goals WHERE id = ? AND user_id = ?", (row['id'], current_uid))
+                        conn.commit()
+                        conn.close()
+                        st.warning("Goal delete/reset ho gaya!")
                         st.rerun()
 
-            st.divider()
+            st.markdown("---")
 
-    # Form to create new goal
-    with st.expander("✨ Naya Target / Dream Set Karein"):
-        with st.form("new_goal_form"):
-            g_title = st.text_input("Goal Title", placeholder="e.g. 26 Din Me 30k Target")
-            c_amt1, c_amt2 = st.columns(2)
-            g_target = c_amt1.number_input("Target Amount (₹)", min_value=100.0, value=30000.0, step=500.0)
-            g_curr = c_amt2.number_input("Already Earned/Saved (₹)", min_value=0.0, value=0.0, step=100.0)
-
-            c_d1, c_d2 = st.columns(2)
-            g_start = c_d1.date_input("Start Date", value=date.today())
-            g_end = c_d2.date_input("Target Date", value=date.today() + pd.Timedelta(days=26))
-
-            if st.form_submit_button("Goal Save Karein"):
-                if g_end <= g_start:
-                    st.error("Target date start date ke baad ki honi chahiye.")
-                elif not g_title.strip():
-                    st.error("Kripya goal ka naam likhein.")
-                else:
-                    c = get_db()
-                    c.execute(
-                        "INSERT INTO goals (title, target_amount, current_amount, start_date, target_date, status) VALUES (?, ?, ?, ?, ?, 'active')",
-                        (g_title.strip(), g_target, g_curr, str(g_start), str(g_end))
-                    )
-                    c.commit()
-                    c.close()
-                    st.success("Goal successfully ban gaya!")
-                    st.rerun()
-
-# ================= TAB 2: ADD INCOME / EXPENSE =================
+# ----------------- TAB 2: ADD ENTRY -----------------
 with tab_add:
-    st.subheader("➕ Nayi Entry Dalein")
+    st.subheader("➕ Add Income / Expense Entry")
     
-    t_type = st.radio("Entry Type", ["Expense (Kharcha)", "Income (Kamai)"], horizontal=True)
-    is_expense = "Expense" in t_type
-
     with st.form("entry_form", clear_on_submit=True):
-        col_amt, col_date = st.columns(2)
-        amount = col_amt.number_input("Amount (₹)", min_value=1.0, step=10.0, format="%.2f")
-        t_date = col_date.date_input("Date", value=date.today())
+        t_type = st.radio("Transaction Type", ["Expense", "Income"], horizontal=True)
+        t_amount = st.number_input("Amount (₹)", min_value=1.0, step=10.0, format="%.2f")
+        t_date = st.date_input("Date", value=date.today())
 
-        if is_expense:
+        if t_type == "Expense":
             categories = [
-                "Food (Lunch/Dinner/Mess)",
+                "Food (Lunch/Dinner)",
                 "Snacks & Tea/Coffee",
                 "Fuel (Petrol/Diesel)",
-                "Grocery & Vegetables",
+                "Shopping",
+                "Rent & Utilities",
                 "Travel / Auto / Cab",
-                "Mobile Recharge & Bills",
-                "Shopping & Personal",
-                "Room Rent",
+                "Grocery & Household",
                 "Other Expense"
             ]
         else:
             categories = [
                 "Daily Earning / Gig",
-                "Freelance / Client Work",
                 "Salary",
-                "Business",
+                "Freelance / Client Work",
+                "Business Sale",
                 "Other Income"
             ]
 
-        category = st.selectbox("Category", categories)
-        note = st.text_input("Details / Note (Optional)", placeholder="e.g. 2L Petrol, Chai & Biscuit, Client payment")
+        t_category = st.selectbox("Category", categories)
+        t_note = st.text_input("Details / Description (Optional)", placeholder="e.g. Petrol 2L, Samosa-Chai, etc.")
 
-        # Smart option: Agar Income hai to sidhe goal me add karne ka option
+        # Goal linked progress option
         conn = get_db()
-        active_goals = conn.execute("SELECT id, title FROM goals WHERE status='active'").fetchall()
+        user_goals = pd.read_sql_query("SELECT id, title FROM goals WHERE user_id = ? AND status='active'", conn, params=(current_uid,))
         conn.close()
 
-        goal_choice = None
-        if not is_expense and active_goals:
-            goal_options = ["None"] + [f"{g['id']} - {g['title']}" for g in active_goals]
-            goal_choice = st.selectbox("Kya is kamai ko kisi Goal me jodna hai?", goal_options)
+        link_goal = False
+        selected_goal_id = None
+        if t_type == "Income" and not user_goals.empty:
+            link_goal = st.checkbox("Kya ise kisi Active Goal ke progress me bhi jodna hai?", value=True)
+            if link_goal:
+                goal_options = dict(zip(user_goals['title'], user_goals['id']))
+                chosen_title = st.selectbox("Choose Goal", list(goal_options.keys()))
+                selected_goal_id = goal_options[chosen_title]
 
-        if st.form_submit_button("Entry Save Karein"):
-            c = get_db()
-            tx_type_str = "Expense" if is_expense else "Income"
-            c.execute(
-                "INSERT INTO transactions (date, type, category, amount, note) VALUES (?, ?, ?, ?, ?)",
-                (str(t_date), tx_type_str, category, amount, note.strip())
-            )
-            
-            # Agar user ne goal me direct link kiya hai
-            if not is_expense and goal_choice and goal_choice != "None":
-                selected_goal_id = int(goal_choice.split(" - ")[0])
-                c.execute("UPDATE goals SET current_amount = current_amount + ? WHERE id = ?", (amount, selected_goal_id))
+        save_entry = st.form_submit_button("💾 Save Entry")
 
-            c.commit()
-            c.close()
-            st.success(f"✅ ₹{amount:,.2f} ({category}) save ho gaya!")
-            st.rerun()
+        if save_entry:
+            conn = get_db()
+            c = conn.cursor()
+            c.execute('''INSERT INTO transactions (user_id, date, type, category, amount, note)
+                         VALUES (?, ?, ?, ?, ?, ?)''',
+                      (current_uid, str(t_date), t_type, t_category, t_amount, t_note))
 
-# ================= TAB 3: ANALYTICS =================
+            if link_goal and selected_goal_id:
+                c.execute("UPDATE goals SET current_amount = current_amount + ? WHERE id = ? AND user_id = ?",
+                          (t_amount, selected_goal_id, current_uid))
+
+            conn.commit()
+            conn.close()
+            st.success(f"✅ ₹{t_amount:,.2f} ({t_category}) save ho gaya!")
+
+# ----------------- TAB 3: ANALYTICS -----------------
 with tab_analytics:
-    st.subheader("📊 Monthly / Yearly Analysis")
-    
+    st.subheader("📊 Monthly & Yearly Analytics")
     conn = get_db()
-    df = pd.read_sql_query("SELECT * FROM transactions", conn)
+    df = pd.read_sql_query("SELECT * FROM transactions WHERE user_id = ?", conn, params=(current_uid,))
     conn.close()
 
     if df.empty:
-        st.info("Abhi tak koi transaction entry nahi hui hai.")
+        st.info("Aapka abhi tak koi transaction record nahi hai.")
     else:
         df['date'] = pd.to_datetime(df['date'])
         df['Year'] = df['date'].dt.year
         df['Month'] = df['date'].dt.strftime('%Y-%m')
 
-        f_type = st.radio("View By", ["Monthly", "Yearly", "Overall"], horizontal=True)
-        filtered_df = df.copy()
+        filter_type = st.radio("Time View", ["Monthly", "Yearly"], horizontal=True)
 
-        if f_type == "Monthly":
-            m_list = sorted(df['Month'].unique(), reverse=True)
-            sel_month = st.selectbox("Mahina Chunein", m_list)
+        if filter_type == "Monthly":
+            available_months = sorted(df['Month'].unique(), reverse=True)
+            sel_month = st.selectbox("Select Month", available_months)
             filtered_df = df[df['Month'] == sel_month]
-        elif f_type == "Yearly":
-            y_list = sorted(df['Year'].unique(), reverse=True)
-            sel_year = st.selectbox("Saal Chunein", y_list)
+        else:
+            available_years = sorted(df['Year'].unique(), reverse=True)
+            sel_year = st.selectbox("Select Year", available_years)
             filtered_df = df[df['Year'] == sel_year]
 
-        # Totals
-        income_sum = filtered_df[filtered_df['type'] == 'Income']['amount'].sum()
-        expense_sum = filtered_df[filtered_df['type'] == 'Expense']['amount'].sum()
-        net_savings = income_sum - expense_sum
+        total_income = filtered_df[filtered_df['type'] == 'Income']['amount'].sum()
+        total_expense = filtered_df[filtered_df['type'] == 'Expense']['amount'].sum()
+        net_savings = total_income - total_expense
 
-        c_inc, c_exp, c_bal = st.columns(3)
-        c_inc.metric("Total Kamai (Income)", f"₹{income_sum:,.2f}")
-        c_exp.metric("Total Kharcha (Expense)", f"₹{expense_sum:,.2f}")
-        c_bal.metric("Bachat (Savings)", f"₹{net_savings:,.2f}", delta=f"{net_savings:,.2f}")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Income", f"₹{total_income:,.2f}")
+        col2.metric("Total Expense", f"₹{total_expense:,.2f}")
+        col3.metric("Net Savings", f"₹{net_savings:,.2f}")
 
-        st.divider()
-
-        # Detailed Category Breakdown
-        exp_df = filtered_df[filtered_df['type'] == 'Expense']
-        if not exp_df.empty:
-            st.write("#### 🛍️ Kharcho Ka Batwara (Where your money went):")
-            cat_summary = exp_df.groupby('category')['amount'].sum().reset_index().sort_values(by='amount', ascending=False)
-            st.dataframe(cat_summary.rename(columns={'category': 'Kharcha Category', 'amount': 'Kul Kharcha (₹)'}), use_container_width=True, hide_index=True)
-            st.bar_chart(cat_summary.set_index('category'))
+        st.markdown("#### Kharcho ka Breakdown (Food, Fuel, Snacks, etc.)")
+        expense_df = filtered_df[filtered_df['type'] == 'Expense']
+        if not expense_df.empty:
+            cat_group = expense_df.groupby('category')['amount'].sum().reset_index()
+            st.bar_chart(cat_group.set_index('category'))
         else:
-            st.caption("Is chune hue time me koi kharcha record nahi hua hai.")
+            st.caption("Is time period me koi kharcha nahi hai.")
 
-# ================= TAB 4: HISTORY =================
+# ----------------- TAB 4: HISTORY & RESET/DELETE -----------------
 with tab_history:
-    st.subheader("📜 Sabhi Transactions")
-    
+    st.subheader("📜 Aapka History & Reset / Delete Section")
+    st.caption("Agar koi galat entry ho gayi hai, to niche di gayi table se Entry ID dekh kar turant delete kar sakte hain.")
+
     conn = get_db()
-    hist_df = pd.read_sql_query("SELECT id, date, type, category, amount, note FROM transactions ORDER BY date DESC, id DESC", conn)
+    all_df = pd.read_sql_query("SELECT id AS 'Entry ID', date AS 'Date', type AS 'Type', category AS 'Category', amount AS 'Amount (₹)', note AS 'Notes' FROM transactions WHERE user_id = ? ORDER BY id DESC", conn, params=(current_uid,))
     conn.close()
 
-    if hist_df.empty:
-        st.info("Koi history nahi hai.")
+    if all_df.empty:
+        st.info("Koi transaction history nahi hai.")
     else:
-        hist_df['amount'] = hist_df['amount'].apply(lambda x: f"₹{x:,.2f}")
-        st.dataframe(hist_df, use_container_width=True, hide_index=True)
+        st.dataframe(all_df, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("🗑️ Galat Entry Reset / Delete Karein")
+
+        col_del1, col_del2 = st.columns([2, 1])
+        with col_del1:
+            del_id = st.number_input("Galat entry ka 'Entry ID' daalein jise delete karna hai:", min_value=1, step=1)
+        with col_del2:
+            st.write("")
+            st.write("")
+            if st.button("🚨 Delete Selected Entry"):
+                conn = get_db()
+                c = conn.cursor()
+                # Verify ki ye entry usi user ki ho
+                c.execute("SELECT id FROM transactions WHERE id = ? AND user_id = ?", (del_id, current_uid))
+                entry = c.fetchone()
+                if entry:
+                    c.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (del_id, current_uid))
+                    conn.commit()
+                    st.success(f"Entry ID #{del_id} successfully delete ho gayi!")
+                    conn.close()
+                    st.rerun()
+                else:
+                    st.error("Yeh ID nahi mili ya yeh aapki entry nahi hai.")
+                    conn.close()
