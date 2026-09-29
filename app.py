@@ -3,7 +3,7 @@ import sqlite3
 import pandas as pd
 from datetime import date, datetime
 
-# Page configuration for mobile and desktop
+# Page configuration
 st.set_page_config(
     page_title="FinTrack & Goal Engine",
     page_icon="💰",
@@ -11,19 +11,20 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for clean mobile-friendly look
+# Custom styling for clean UI
 st.markdown("""
     <style>
-    .metric-box {
+    .metric-card {
         background-color: #f8f9fa;
-        border-radius: 8px;
+        border: 1px solid #e9ecef;
         padding: 12px;
-        margin-bottom: 10px;
+        border-radius: 8px;
+        margin-bottom: 8px;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# Database Setup
+# Database Connection (Local SQLite Fallback & Persistence)
 def get_db():
     conn = sqlite3.connect("fintrack.db", check_same_thread=False)
     return conn
@@ -31,7 +32,6 @@ def get_db():
 def init_db():
     conn = get_db()
     c = conn.cursor()
-    # Transactions Table (No user_id dependency)
     c.execute('''CREATE TABLE IF NOT EXISTS transactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     date TEXT,
@@ -40,7 +40,6 @@ def init_db():
                     amount REAL,
                     note TEXT
                 )''')
-    # Goals Table (No user_id dependency)
     c.execute('''CREATE TABLE IF NOT EXISTS goals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT,
@@ -55,18 +54,28 @@ def init_db():
 
 init_db()
 
+# Google Sheets Helper (Optional Sync if configured in secrets)
+def get_gsheet_conn():
+    try:
+        import importlib
+        GSheetsConnection = importlib.import_module("streamlit_gsheets").GSheetsConnection
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        return conn
+    except Exception:
+        return None
+
 # Navigation Tabs
 st.title("💰 FinTrack & Goal Engine")
 tab_goals, tab_add, tab_analytics, tab_history = st.tabs([
     "🎯 Goals & Targets",
     "➕ Add Entry",
     "📊 Monthly/Yearly Analytics",
-    "📜 History"
+    "📜 History & Manage Entries"
 ])
 
 # ==================== TAB 1: GOALS & BREAKDOWN ====================
 with tab_goals:
-    st.subheader("🎯 Dream / Goal Tracker")
+    st.subheader("🎯 Dream & Target Tracker")
 
     with st.expander("➕ Create New Goal", expanded=False):
         with st.form("new_goal_form", clear_on_submit=True):
@@ -94,13 +103,13 @@ with tab_goals:
                     st.success("Goal successfully save ho gaya!")
                     st.rerun()
 
-    # Read Goals Data
+    # Read Goals
     conn = get_db()
     goals_df = pd.read_sql_query("SELECT * FROM goals WHERE status='active'", conn)
     conn.close()
 
     if goals_df.empty:
-        st.info("Abhi aapka koi active goal nahi hai. Upar se add karein!")
+        st.info("Abhi koi active goal nahi hai. Upar se add karein!")
     else:
         for _, row in goals_df.iterrows():
             today = date.today()
@@ -116,19 +125,19 @@ with tab_goals:
             st.markdown(f"### {row['title']}")
             st.progress(progress)
             
-            col_m1, col_m2, col_m3 = st.columns(3)
-            col_m1.metric("Target", f"₹{row['target_amount']:,.2f}")
-            col_m2.metric("Achieved", f"₹{row['current_amount']:,.2f}", f"{progress*100:.1f}%")
-            col_m3.metric("Remaining", f"₹{remaining_amount:,.2f}")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Target", f"₹{row['target_amount']:,.2f}")
+            c2.metric("Achieved", f"₹{row['current_amount']:,.2f}", f"{progress*100:.1f}%")
+            c3.metric("Remaining", f"₹{remaining_amount:,.2f}")
 
-            col_m4, col_m5 = st.columns(2)
-            col_m4.metric("Days Left", f"{days_left} Days")
-            col_m5.metric("Required Run-Rate", f"₹{daily_run_rate:,.2f} / day")
+            c4, c5 = st.columns(2)
+            c4.metric("Days Remaining", f"{days_left} Days")
+            c5.metric("Required Run-Rate", f"₹{daily_run_rate:,.2f} / day")
 
-            # Quick Update / Delete
-            c_up1, c_up2 = st.columns([2, 1])
-            with c_up1:
-                with st.form(f"update_progress_{row['id']}"):
+            # Progress update & Reset/Delete options
+            col_act1, col_act2, col_act3 = st.columns([2, 1, 1])
+            with col_act1:
+                with st.form(f"progress_form_{row['id']}"):
                     add_amt = st.number_input("Add Progress Amount (₹)", min_value=1.0, step=100.0, key=f"amt_{row['id']}")
                     if st.form_submit_button("Update Progress"):
                         conn = get_db()
@@ -139,13 +148,23 @@ with tab_goals:
                         conn.close()
                         st.success("Progress update ho gaya!")
                         st.rerun()
-            with c_up2:
-                if st.button("Mark Completed", key=f"done_{row['id']}"):
+            with col_act2:
+                if st.button("🔄 Reset Progress", key=f"reset_g_{row['id']}"):
                     conn = get_db()
                     c = conn.cursor()
-                    c.execute("UPDATE goals SET status='completed' WHERE id = ?", (row['id'],))
+                    c.execute("UPDATE goals SET current_amount = 0.0 WHERE id = ?", (row['id'],))
                     conn.commit()
                     conn.close()
+                    st.warning("Goal progress 0 par reset ho gayi!")
+                    st.rerun()
+            with col_act3:
+                if st.button("🗑️ Delete Goal", key=f"del_g_{row['id']}"):
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute("DELETE FROM goals WHERE id = ?", (row['id'],))
+                    conn.commit()
+                    conn.close()
+                    st.error("Goal delete kar diya gaya!")
                     st.rerun()
             st.markdown("---")
 
@@ -172,11 +191,11 @@ with tab_add:
                       (str(t_date), t_type, t_category, t_amount, t_note))
             conn.commit()
             conn.close()
-            st.success("Transaction save ho gaya!")
+            st.success(f"{t_type} ₹{t_amount} successfully save ho gaya!")
 
 # ==================== TAB 3: ANALYTICS ====================
 with tab_analytics:
-    st.subheader("📊 Analytics & Breakdown")
+    st.subheader("📊 Monthly & Yearly Breakdown")
     conn = get_db()
     df = pd.read_sql_query("SELECT * FROM transactions", conn)
     conn.close()
@@ -214,16 +233,45 @@ with tab_analytics:
             cat_group = expense_df.groupby('category')['amount'].sum().reset_index()
             st.bar_chart(cat_group.set_index('category'))
         else:
-            st.caption("Is time period me koi expense nahi mila.")
+            st.caption("Is time period me koi expense nahi hai.")
 
-# ==================== TAB 4: HISTORY ====================
+# ==================== TAB 4: HISTORY & RESET ====================
 with tab_history:
-    st.subheader("📜 Transaction History")
+    st.subheader("📜 Manage / Reset Wrong Entries")
     conn = get_db()
-    all_df = pd.read_sql_query("SELECT id, date, type, category, amount, note FROM transactions ORDER BY date DESC", conn)
+    all_df = pd.read_sql_query("SELECT id, date, type, category, amount, note FROM transactions ORDER BY id DESC", conn)
     conn.close()
 
     if all_df.empty:
-        st.info("Koi history available nahi hai.")
+        st.info("Koi transaction history nahi hai.")
     else:
         st.dataframe(all_df, use_container_width=True)
+
+        st.markdown("### ❌ Wrong Entry Reset / Delete")
+        entry_to_del = st.selectbox(
+            "Galat entry select karein delete karne ke liye:",
+            options=all_df['id'].tolist(),
+            format_func=lambda x: f"ID #{x} | {all_df.loc[all_df['id']==x, 'date'].values[0]} | {all_df.loc[all_df['id']==x, 'type'].values[0]} | ₹{all_df.loc[all_df['id']==x, 'amount'].values[0]} ({all_df.loc[all_df['id']==x, 'category'].values[0]})"
+        )
+
+        col_del1, col_del2 = st.columns([1, 2])
+        with col_del1:
+            if st.button("🗑️ Delete This Transaction", type="primary"):
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("DELETE FROM transactions WHERE id = ?", (int(entry_to_del),))
+                conn.commit()
+                conn.close()
+                st.success(f"Transaction ID #{entry_to_del} delete ho gaya!")
+                st.rerun()
+
+        with col_del2:
+            with st.expander("⚠️ Danger Zone: Pura Data Reset Karein"):
+                if st.button("🔥 Reset All Transactions"):
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute("DELETE FROM transactions")
+                    conn.commit()
+                    conn.close()
+                    st.warning("Saare transactions delete ho gaye!")
+                    st.rerun()
