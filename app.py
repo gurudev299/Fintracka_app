@@ -3,13 +3,26 @@ import sqlite3
 import pandas as pd
 from datetime import date, datetime
 
-# Page configuration
+# Page configuration for mobile and desktop
 st.set_page_config(
     page_title="FinTrack & Goal Engine",
     page_icon="💰",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# Custom styling for mobile cards
+st.markdown("""
+    <style>
+    .metric-card {
+        background-color: #f8f9fa;
+        border: 1px solid #e9ecef;
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 10px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # Database Setup
 def get_db():
@@ -19,15 +32,16 @@ def get_db():
 def init_db():
     conn = get_db()
     c = conn.cursor()
-    # Income aur Expense alag-alag columns me save honge
+    # Transactions Table (Standard structure)
     c.execute('''CREATE TABLE IF NOT EXISTS transactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     date TEXT,
+                    type TEXT,
                     category TEXT,
-                    income REAL DEFAULT 0,
-                    expense REAL DEFAULT 0,
+                    amount REAL,
                     note TEXT
                 )''')
+    # Goals Table
     c.execute('''CREATE TABLE IF NOT EXISTS goals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT,
@@ -48,7 +62,7 @@ tab_goals, tab_add, tab_analytics, tab_history = st.tabs([
     "🎯 Goals & Targets",
     "➕ Add Entry",
     "📊 Monthly/Yearly Analytics",
-    "📜 History & Manage Entries"
+    "📜 History"
 ])
 
 # ==================== TAB 1: GOALS & BREAKDOWN ====================
@@ -81,12 +95,13 @@ with tab_goals:
                     st.success("Goal successfully save ho gaya!")
                     st.rerun()
 
+    # Read Goals Data
     conn = get_db()
     goals_df = pd.read_sql_query("SELECT * FROM goals WHERE status='active'", conn)
     conn.close()
 
     if goals_df.empty:
-        st.info("Abhi koi active goal nahi hai. Upar se add karein!")
+        st.info("Abhi aapka koi active goal nahi hai. Upar se add karein!")
     else:
         for _, row in goals_df.iterrows():
             today = date.today()
@@ -95,91 +110,64 @@ with tab_goals:
             
             remaining_amount = max(row['target_amount'] - row['current_amount'], 0.0)
             progress = min(row['current_amount'] / row['target_amount'], 1.0) if row['target_amount'] > 0 else 0.0
+            
+            # Dynamic Run-rate calculation (26 days / 30k logic)
             daily_run_rate = (remaining_amount / days_left) if days_left > 0 else remaining_amount
 
             st.markdown(f"### {row['title']}")
             st.progress(progress)
             
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Target", f"₹{row['target_amount']:,.2f}")
-            c2.metric("Achieved", f"₹{row['current_amount']:,.2f}", f"{progress*100:.1f}%")
-            c3.metric("Remaining", f"₹{remaining_amount:,.2f}")
+            col_m1, col_m2, col_m3 = st.columns(3)
+            col_m1.metric("Target", f"₹{row['target_amount']:,.2f}")
+            col_m2.metric("Achieved", f"₹{row['current_amount']:,.2f}", f"{progress*100:.1f}%")
+            col_m3.metric("Remaining", f"₹{remaining_amount:,.2f}")
 
-            c4, c5 = st.columns(2)
-            c4.metric("Days Remaining", f"{days_left} Days")
-            c5.metric("Required Run-Rate", f"₹{daily_run_rate:,.2f} / day")
+            col_m4, col_m5 = st.columns(2)
+            col_m4.metric("Days Left", f"{days_left} Days")
+            col_m5.metric("Required Run-Rate", f"₹{daily_run_rate:,.2f} / day")
 
-            col_act1, col_act2, col_act3 = st.columns([2, 1, 1])
-            with col_act1:
-                with st.form(f"progress_form_{row['id']}"):
-                    add_amt = st.number_input("Add Progress Amount (₹)", min_value=1.0, step=100.0, key=f"amt_{row['id']}")
-                    if st.form_submit_button("Update Progress"):
-                        conn = get_db()
-                        c = conn.cursor()
-                        new_val = row['current_amount'] + add_amt
-                        c.execute("UPDATE goals SET current_amount = ? WHERE id = ?", (new_val, row['id']))
-                        conn.commit()
-                        conn.close()
-                        st.success("Progress update ho gaya!")
-                        st.rerun()
-            with col_act2:
-                if st.button("🔄 Reset Progress", key=f"reset_g_{row['id']}"):
+            # Quick Update Progress
+            with st.form(f"update_progress_{row['id']}"):
+                add_amt = st.number_input("Add Progress Amount (₹)", min_value=1.0, step=100.0, key=f"amt_{row['id']}")
+                if st.form_submit_button("Update Progress"):
                     conn = get_db()
                     c = conn.cursor()
-                    c.execute("UPDATE goals SET current_amount = 0.0 WHERE id = ?", (row['id'],))
+                    new_val = row['current_amount'] + add_amt
+                    c.execute("UPDATE goals SET current_amount = ? WHERE id = ?", (new_val, row['id']))
                     conn.commit()
                     conn.close()
-                    st.warning("Progress 0 par reset ho gayi!")
-                    st.rerun()
-            with col_act3:
-                if st.button("🗑️ Delete Goal", key=f"del_g_{row['id']}"):
-                    conn = get_db()
-                    c = conn.cursor()
-                    c.execute("DELETE FROM goals WHERE id = ?", (row['id'],))
-                    conn.commit()
-                    conn.close()
+                    st.success("Progress update ho gaya!")
                     st.rerun()
             st.markdown("---")
 
-# ==================== TAB 2: ADD ENTRY (FIXED DYNAMIC REFRESH) ====================
+# ==================== TAB 2: ADD ENTRY ====================
 with tab_add:
     st.subheader("➕ Add Income / Expense")
-    
-    # Form ke bahar rakha hai taaki click karte hi dropdown instantly refresh ho
-    t_type = st.radio("Choose Type", ["Expense", "Income"], horizontal=True)
-
-    # Dynamic Category Selection
-    if t_type == "Income":
-        categories = ["Salary", "Freelance/Gig", "Business", "Investment", "Bonus", "Other Income"]
-    else:
-        categories = ["Food & Dining", "Travel & Petrol", "Rent & Utilities", "Shopping", "Bills & Recharge", "Health & Medical", "Miscellaneous"]
-
-    with st.form("transaction_form", clear_on_submit=True):
-        t_category = st.selectbox(f"Select {t_type} Category", categories)
+    with st.form("entry_form", clear_on_submit=True):
+        t_type = st.radio("Type", ["Income", "Expense"], horizontal=True)
         t_amount = st.number_input("Amount (₹)", min_value=1.0, step=50.0)
         t_date = st.date_input("Date", value=date.today())
-        t_note = st.text_input("Note (Optional, e.g. Lunch, Taxi, Client payout)")
         
-        save_btn = st.form_submit_button(f"Save {t_type}")
-        if save_btn:
+        categories = ["Salary", "Freelance/Gig", "Business", "Investment", "Other Income"] if t_type == "Income" else [
+            "Food & Dining", "Rent & Utilities", "Shopping", "Travel", "Bills", "Health", "Miscellaneous"
+        ]
+        t_category = st.selectbox("Category", categories)
+        t_note = st.text_input("Note (Optional)")
+        
+        save_entry = st.form_submit_button("Save Transaction")
+        if save_entry:
             conn = get_db()
             c = conn.cursor()
-            
-            # Alag alag columns me save karne ka logic
-            income_val = t_amount if t_type == "Income" else 0.0
-            expense_val = t_amount if t_type == "Expense" else 0.0
-            
-            c.execute('''INSERT INTO transactions (date, category, income, expense, note)
+            c.execute('''INSERT INTO transactions (date, type, category, amount, note)
                          VALUES (?, ?, ?, ?, ?)''',
-                      (str(t_date), t_category, income_val, expense_val, t_note))
+                      (str(t_date), t_type, t_category, t_amount, t_note))
             conn.commit()
             conn.close()
             st.success(f"{t_type} ₹{t_amount} successfully save ho gaya!")
-            st.rerun()
 
 # ==================== TAB 3: ANALYTICS ====================
 with tab_analytics:
-    st.subheader("📊 Monthly & Yearly Breakdown")
+    st.subheader("📊 Income & Expense Breakdown")
     conn = get_db()
     df = pd.read_sql_query("SELECT * FROM transactions", conn)
     conn.close()
@@ -202,8 +190,8 @@ with tab_analytics:
             sel_year = st.selectbox("Select Year", available_years)
             filtered_df = df[df['Year'] == sel_year]
 
-        total_income = filtered_df['income'].sum()
-        total_expense = filtered_df['expense'].sum()
+        total_income = filtered_df[filtered_df['type'] == 'Income']['amount'].sum()
+        total_expense = filtered_df[filtered_df['type'] == 'Expense']['amount'].sum()
         net_savings = total_income - total_expense
 
         col1, col2, col3 = st.columns(3)
@@ -211,56 +199,23 @@ with tab_analytics:
         col2.metric("Total Expense", f"₹{total_expense:,.2f}")
         col3.metric("Net Savings", f"₹{net_savings:,.2f}")
 
-        # Expense breakdown chart
+        # Category Breakdown
         st.markdown("#### Expense by Category")
-        exp_only = filtered_df[filtered_df['expense'] > 0]
-        if not exp_only.empty:
-            cat_group = exp_only.groupby('category')['expense'].sum().reset_index()
+        expense_df = filtered_df[filtered_df['type'] == 'Expense']
+        if not expense_df.empty:
+            cat_group = expense_df.groupby('category')['amount'].sum().reset_index()
             st.bar_chart(cat_group.set_index('category'))
         else:
             st.caption("Is time period me koi expense record nahi hai.")
 
-# ==================== TAB 4: HISTORY & RESET ====================
+# ==================== TAB 4: HISTORY ====================
 with tab_history:
-    st.subheader("📜 History & Manage Entries")
+    st.subheader("📜 Transaction History")
     conn = get_db()
-    all_df = pd.read_sql_query("SELECT id, date, category, income, expense, note FROM transactions ORDER BY id DESC", conn)
+    all_df = pd.read_sql_query("SELECT id, date, type, category, amount, note FROM transactions ORDER BY id DESC", conn)
     conn.close()
 
     if all_df.empty:
-        st.info("Koi transaction history nahi hai.")
+        st.info("Koi history available nahi hai.")
     else:
-        # Table format with separate Income & Expense columns
-        st.dataframe(
-            all_df.style.format({"income": "₹{:,.2f}", "expense": "₹{:,.2f}"}),
-            use_container_width=True
-        )
-
-        st.markdown("### ❌ Wrong Entry Reset / Delete")
-        entry_to_del = st.selectbox(
-            "Galat entry select karein delete karne ke liye:",
-            options=all_df['id'].tolist(),
-            format_func=lambda x: f"ID #{x} | {all_df.loc[all_df['id']==x, 'date'].values[0]} | {all_df.loc[all_df['id']==x, 'category'].values[0]} | Inc: ₹{all_df.loc[all_df['id']==x, 'income'].values[0]} | Exp: ₹{all_df.loc[all_df['id']==x, 'expense'].values[0]}"
-        )
-
-        col_del1, col_del2 = st.columns([1, 2])
-        with col_del1:
-            if st.button("🗑️ Delete This Transaction", type="primary"):
-                conn = get_db()
-                c = conn.cursor()
-                c.execute("DELETE FROM transactions WHERE id = ?", (int(entry_to_del),))
-                conn.commit()
-                conn.close()
-                st.success(f"Entry ID #{entry_to_del} delete ho gayi!")
-                st.rerun()
-
-        with col_del2:
-            with st.expander("⚠️ Danger Zone: Pura Data Clear"):
-                if st.button("🔥 Reset All History"):
-                    conn = get_db()
-                    c = conn.cursor()
-                    c.execute("DELETE FROM transactions")
-                    conn.commit()
-                    conn.close()
-                    st.warning("Saara history data reset ho gaya!")
-                    st.rerun()
+        st.dataframe(all_df, use_container_width=True)
